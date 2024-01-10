@@ -36,6 +36,7 @@
 
 #include "MotorState.h"
 #include "OLEDUI.h"
+#include "helpers.h"
 
 #define MAX_CURRENT        1.7
 #define PSH_AZ_DEC         4
@@ -43,8 +44,8 @@
 #define PSH_EL_DEC         2
 #define PSH_EL_INC         15
 
-#define AZ_MOTOR_FWD       17
-#define AZ_MOTOR_BWD       16
+#define AZ_MOTOR_FWD       16
+#define AZ_MOTOR_BWD       17
 #define SENSOR_AZ          32
 
 #define EL_MOTOR_FWD       18
@@ -65,6 +66,9 @@
 TaskHandle_t g_pollTaskHandle;
 RotorContext g_context;
 OLEDUI       g_ui;
+bool         g_reports = false;
+
+SemaphoreHandle_t g_serialMutex;
 
 struct CommandDesc {
   const char *command;
@@ -72,17 +76,29 @@ struct CommandDesc {
   bool (*callback) (std::vector<std::string> const &args);
 };
 
+void
+acquireSerial()
+{
+  xSemaphoreTake(g_serialMutex, portMAX_DELAY);
+}
+
+void
+releaseSerial()
+{
+  xSemaphoreGive(g_serialMutex);
+}
+
 bool
 cmdAZ(std::vector<std::string> const &args)
 {
   float fAngle;
 
   if (sscanf(args[1].c_str(), "%f", &fAngle) < 1) {
-    Serial.printf("E:Invalid angle\r\n");
+    LOG("E:Invalid angle\r\n");
     return false;
   }
 
-  Serial.printf("I:MOVE[AZ]:%g\r\n", fAngle);
+  LOG("I:MOVE[AZ]:%g\r\n", fAngle);
   g_context.azimuth.goTo(2 * fAngle);
   return true;
 }
@@ -93,11 +109,11 @@ cmdEL(std::vector<std::string> const &args)
   float fAngle;
 
   if (sscanf(args[1].c_str(), "%f", &fAngle) < 1) {
-    Serial.printf("E:Invalid angle\r\n");
+    LOG("E:Invalid angle\r\n");
     return false;
   }
 
-  Serial.printf("I:MOVE[EL]:%g\r\n", fAngle);
+  LOG("I:MOVE[EL]:%g\r\n", fAngle);
   g_context.elevation.goTo(2 * fAngle);
   return true;
 }
@@ -109,11 +125,11 @@ cmdGOTO(std::vector<std::string> const &args)
 
   if (sscanf(args[1].c_str(), "%f", &fAz) < 1 
     || sscanf(args[2].c_str(), "%f", &fEl) < 1) {
-    Serial.printf("E:Invalid angles\r\n");
+    LOG("E:Invalid angles\r\n");
     return false;
   }
 
-  Serial.printf("I:GOTO:%g:%g\r\n", fAz, fEl);
+  LOG("I:GOTO:%g:%g\r\n", fAz, fEl);
 
   g_context.azimuth.goTo(2 * fAz);
   g_context.elevation.goTo(2 * fEl);
@@ -128,7 +144,7 @@ cmdOVERCURRENT(std::vector<std::string> const &args)
   MotorState *state = nullptr;
 
   if (sscanf(args[2].c_str(), "%f", &current) < 1 || current < 0) {
-    Serial.printf("E:Invalid overcurrent specification\r\n");
+    LOG("E:Invalid overcurrent specification\r\n");
     return false;
   }
 
@@ -137,13 +153,13 @@ cmdOVERCURRENT(std::vector<std::string> const &args)
   } else if (args[1] == "EL") {
     state = &g_context.elevation;
   } else {
-    Serial.printf("E:Invalid motor specification\r\n");
+    LOG("E:Invalid motor specification\r\n");
     return false;
   }
 
   state->setMaxCurrent(current);
 
-  Serial.printf("I:OVERCURRENT[%s]:%6.4f\r\n", args[1].c_str(), current);
+  LOG("I:OVERCURRENT[%s]:%6.4f\r\n", args[1].c_str(), current);
 
   return true;
 }
@@ -155,7 +171,7 @@ cmdMINSPEED(std::vector<std::string> const &args)
   MotorState *state = nullptr;
 
   if (sscanf(args[2].c_str(), "%f", &percent) < 1 || percent < 0 || percent > 100) {
-    Serial.printf("E:Invalid slow speed rate specification\r\n");
+    LOG("E:Invalid slow speed rate specification\r\n");
     return false;
   }
 
@@ -164,13 +180,13 @@ cmdMINSPEED(std::vector<std::string> const &args)
   } else if (args[1] == "EL") {
     state = &g_context.elevation;
   } else {
-    Serial.printf("E:Invalid motor specification\r\n");
+    LOG("E:Invalid motor specification\r\n");
     return false;
   }
 
   state->setSlowSpeedFrac(percent * 1e-2);
 
-  Serial.printf("I:MINSPEED[%s]:%6.4f\r\n", args[1].c_str(), percent);
+  LOG("I:MINSPEED[%s]:%6.4f\r\n", args[1].c_str(), percent);
 
   return true;
 }
@@ -187,21 +203,31 @@ cmdABORT(std::vector<std::string> const &args)
 bool
 cmdPOS(std::vector<std::string> const &args)
 {
-  Serial.printf("I:POS:");
+  LOG("I:POS:");
 
   if (g_context.azimuth.initialized) {
     float az = .5 * g_context.azimuth.currLocation;
-    Serial.printf("%g:", az);
+    LOG("%g:", az);
   } else {
-    Serial.printf("NA:");
+    LOG("NA:");
   }
 
   if (g_context.elevation.initialized) {
     float el = .5 * g_context.elevation.currLocation;
-    Serial.printf("%g\r\n", el);
+    LOG("%g\r\n", el);
   } else {
-    Serial.printf("NA\r\n");
+    LOG("NA\r\n");
   }
+
+  return true;
+}
+
+bool
+cmdREPORT(std::vector<std::string> const &args)
+{
+  g_reports = args[1] == "on" || args[1] == "ON";
+
+  LOG("I:Reports are %s\r\n", g_reports ? "ON" : "OFF");
 
   return true;
 }
@@ -213,11 +239,11 @@ cmdVH(std::vector<std::string> const &args)
 
   if (sscanf(args[1].c_str(), "%f", &fAz) < 1 
     || sscanf(args[2].c_str(), "%f", &fEl) < 1) {
-    Serial.printf("E:Invalid angles\r\n");
+    LOG("E:Invalid angles\r\n");
     return false;
   }
 
-  Serial.printf("I:VH:%g:%g\r\n", fAz, fEl);
+  LOG("I:VH:%g:%g\r\n", fAz, fEl);
 
   g_context.azimuth.virtualHome(2 * fAz);
   g_context.elevation.virtualHome(2 * fEl);
@@ -231,7 +257,7 @@ pollTask(void *opaque)
   RotorContext *context = &g_context;
   
   delay(1000);
-  Serial.printf("Polling task started!\r\n");
+  LOG("Polling task started!\r\n");
 
   for (;;) {
     context->azimuth.iteration();
@@ -249,12 +275,22 @@ const CommandDesc g_commands[] =
   {"POS",         0, cmdPOS},
   {"VH",          2, cmdVH},
   {"MINSPEED",    2, cmdMINSPEED},
+  {"REPORT",      1, cmdREPORT},
   {nullptr,       0, nullptr}
 };
 
 void
 setup() {
   Serial.begin(115200);
+
+  do {
+  g_serialMutex = xSemaphoreCreateMutex();
+
+    if (g_serialMutex == nullptr) {
+      LOG("Critical: Failed to create mutex\n");
+      delay(1000);
+    }
+  } while (g_serialMutex == nullptr);
 
   pinMode(AZ_MOTOR_FWD, OUTPUT);
   pinMode(AZ_MOTOR_BWD, OUTPUT);
@@ -366,10 +402,10 @@ parseCommand()
     }
 
     if (g_commands[i].command == nullptr) {
-      Serial.printf("E:%s:Unknown command\r\n", args[0].c_str());
+      LOG("E:%s:Unknown command\r\n", args[0].c_str());
       return;
     } else if (g_commands[i].args != args.size() - 1) {
-      Serial.printf(
+      LOG(
         "E:%s:Invalid number of arguments (expected %d)\r\n",
         args[0].c_str(),
         g_commands[i].args);
@@ -387,7 +423,7 @@ readCommand()
     char b = Serial.read();
     g_command[g_cmdptr] = toupper(b);
     if (g_cmdptr == CMD_LINE_SZ - 1) {
-      Serial.printf("E:Command line too big\r\n");
+      LOG("E:Command line too big\r\n");
       g_cmdptr = 0;
     } else if (b == '\n' || b == '\r') {
       g_command[g_cmdptr] = '\0';
@@ -450,10 +486,26 @@ pollButtons()
 }
 
 void
+printReports()
+{
+  LOG(
+    "I:REPORT[AZ]:%g:%g:%d:%d\r\n",
+    .5 * g_context.azimuth.currLocation,
+    g_context.azimuth.current(),
+    g_context.azimuth.state(),
+    g_context.azimuth.reason());
+  
+  LOG(
+    "I:REPORT[EL]:%g:%g:%d:%d\r\n",
+    .5 * g_context.elevation.currLocation,
+    g_context.elevation.current(),
+    g_context.elevation.state(),
+    g_context.elevation.reason());
+}
+
+void
 loop() {
   static int n = 0;
-  static int32_t readingAz = 0;
-  static int32_t readingEl = 0;
 
   g_ui.drawRotorContext(g_context);
   g_ui.clock();
@@ -462,4 +514,11 @@ loop() {
   delay(50);
 
   readCommand();
+
+  if (g_reports)
+    printReports();
+  
+  if (++n == 10)
+    n = 0;
+  
 }

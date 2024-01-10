@@ -33,6 +33,8 @@
 #include <pcf8574.h>
 #include <cmath>
 
+#include "helpers.h"
+
 PCF8574      g_homing(0x20);
 
 //////////////////////////// Abstract commands /////////////////////////////////
@@ -335,7 +337,7 @@ do_finish:
 
   m_state = Finalized;
 
-  Serial.printf("I:FINALIZED[%s]:%s\r\n", name(), g_reasonStrings[reason]);
+  LOG("I:FINALIZED[%s]:%s\r\n", name(), g_reasonStrings[reason]);
 }
 
 void
@@ -447,7 +449,7 @@ void
 MotorState::goTo(uint16_t location)
 {
   if (m_state != Idle) {
-    Serial.printf("E:%s:Motor is busy\r\n", name());
+    LOG("E:%s:Motor is busy\r\n", name());
     return;
   }
 
@@ -461,7 +463,7 @@ void
 MotorState::virtualHome(int16_t location)
 {
   if (m_state != Idle) {
-    Serial.printf("E:%s:Motor is busy\r\n", name());
+    LOG("E:%s:Motor is busy\r\n", name());
     return;
   }
 
@@ -474,7 +476,7 @@ void
 MotorState::move(MotorDirection direction, int button)
 {
   if (m_state != Idle) {
-    Serial.printf("E:%s:Motor is busy (speed: %d)\r\n", name(), currSpeed());
+    LOG("E:%s:Motor is busy (speed: %d)\r\n", name(), currSpeed());
     return;
   }
 
