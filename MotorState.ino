@@ -174,6 +174,71 @@ MoveCommand::stop()
   return digitalRead(m_button) == HIGH;
 }
 
+/////////////////////////// Supported commands /////////////////////////////////
+void
+ParkingCommand::setDirection(MotorDirection dir)
+{
+  if (dir == Forward) {
+    if (state()->homedHigh() || !state()->canHomeHigh())
+      dir = Disabled;
+  } else if (dir == Backward) {
+    if (state()->homedLow() || !state()->canHomeLow())
+      dir = Disabled;
+  } else {
+    dir = Disabled;
+  }
+
+  m_direction = dir;
+}
+
+void
+ParkingCommand::setMaxPulses(unsigned int maxPulses)
+{
+  m_maxPulses = maxPulses;
+}
+
+MotorDirection
+ParkingCommand::direction()
+{
+  return m_direction;
+}
+
+uint8_t
+ParkingCommand::speed()
+{
+  if (m_direction == Disabled)
+    return 0;
+  
+  return state()->maxSpeed();
+}
+
+bool
+ParkingCommand::stop()
+{
+  if (state()->pulses() > m_maxPulses)
+    goto do_stop;
+
+  switch (m_direction) {
+    case Forward:
+      if (state()->homedHigh())
+        goto do_stop;
+      break;
+
+    case Backward:
+      if (state()->homedLow())
+        goto do_stop;
+      break;
+
+    default:
+      goto do_stop;
+  }
+
+  return false;
+
+do_stop:
+  return true;
+}
+
 ///////////////////////////// Virtual Homing commands //////////////////////////
 void
 VirtualHomeCommand::setLocation(int32_t pos)
@@ -202,6 +267,7 @@ MotorState::init(MotorProperties const &prop)
   m_gotoCmd.setState(this);
   m_moveCmd.setState(this);
   m_virtualHomeCmd.setState(this);
+  m_parkingCmd.setState(this);
 
   if (prop.overCurrentPin > 0) {
     m_currentReadings = -.1 / log(1 - prop.overCurrentAlpha);
@@ -403,9 +469,50 @@ MotorState::iteration()
       currEdge = micros();
       ellapsed = currEdge - m_lastEdge;
 
+      // The homing switches are checked differently depending on our direction
+      // of movement. In particular:
+      //
+      // Moving FORWARD:
+      //  If not homedHigh && rising edge on homeHigh: homedHigh = True
+      //  If homedLow && falling edge on homeLow: homedLow = False
+      //
+      // Moving BACKWARD:
+      //  If homedHigh && falling edge on homeHigh: homedHigh = False
+      //  If not homedLow && rising edge on homeLow: homedLow = True
+      
+      // Homing switches
+      if (m_properties.homeHigh > 0) {
+        bool state = digitalRead(m_properties.homeHigh) == HIGH;
+
+        if (state != m_prevHomeHigh) {
+          if (m_direction == Forward && state)
+            m_homedHigh = true;
+          else if (m_direction == Backward && !state)
+            m_homedHigh = false;
+
+          m_prevHomeHigh = state;
+        }
+      }
+
+      if (m_properties.homeLow > 0) {
+        bool state = digitalRead(m_properties.homeLow) == HIGH;        
+
+        if (state != m_prevHomeLow) {
+          if (m_direction == Backward && state)
+            m_homedLow = true;
+          else if (m_direction == Forward && !state)
+            m_homedLow = false;
+
+          m_prevHomeLow = state;
+        }
+      }
+
+      // Encoder pulses
       if (currPulse != m_prevState) {
-        // Leaving pulse. Updaye current location
-        if (currPulse && ellapsed > MIN_PULSE_TIME_US) {
+        bool edgeSignal = m_direction == Forward ? currPulse : !currPulse;
+        unsigned minLen = m_direction == Forward ? MIN_FWD_PULSE_TIME_US : MIN_BWD_PULSE_TIME_US;
+
+        if (edgeSignal && ellapsed > minLen) {
           ++m_currPulses;
           if (m_direction == Forward)
             ++currLocation;
@@ -471,6 +578,22 @@ MotorState::virtualHome(int16_t location)
   m_pendingCmd = &m_virtualHomeCmd;
   m_cmdFlag    = true;
 }
+
+void
+MotorState::parking(MotorDirection dir, uint16_t pulses)
+{
+  if (m_state != Idle) {
+    LOG("E:%s:Motor is busy\r\n", name());
+    return;
+  }
+
+  m_parkingCmd.setDirection(dir);
+  m_parkingCmd.setMaxPulses(pulses);
+  
+  m_pendingCmd = &m_parkingCmd;
+  m_cmdFlag    = true;
+}
+    
 
 void
 MotorState::move(MotorDirection direction, int button)

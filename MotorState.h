@@ -34,9 +34,10 @@
 
 #include <cstdint>
 
-#define MIN_COUNTS            1000
-#define MIN_PULSE_TIME_US   100000
-#define MOTOR_TIMEOUT_US   2000000
+#define MIN_COUNTS                1000
+#define MIN_FWD_PULSE_TIME_US   100000
+#define MIN_BWD_PULSE_TIME_US    30000
+#define MOTOR_TIMEOUT_US       2000000
 
 enum MotorDirection {
   Disabled,
@@ -119,14 +120,17 @@ class MoveCommand : public AbstractMotorCommand {
     virtual bool stop() override;
 };
 
-class HomeCommand : public AbstractMotorCommand {
+class ParkingCommand : public AbstractMotorCommand {
+    MotorDirection m_direction;
+    unsigned int   m_maxPulses = 360;
+
   public:
     void setDirection(MotorDirection);
-    void setHomeLocation(float);
+    void setMaxPulses(unsigned int);
 
+    virtual MotorDirection direction() override;
     virtual uint8_t speed() override;
     virtual bool stop() override;
-    virtual void fini() override;
 };
 
 class VirtualHomeCommand : public AbstractMotorCommand {
@@ -142,6 +146,7 @@ struct MotorProperties {
   unsigned int sensorPin        = 0;
   unsigned int forwardPWM       = 0;
   unsigned int backwardPWM      = 0;
+
   int          overCurrentPin   = -1;
   float        overCurrentSlope = 10.8;
   int32_t      overCurrentZero  = 0;
@@ -157,8 +162,8 @@ struct MotorProperties {
   uint32_t cycleLen    = 720; // Pulses of 0.5º in a 360º turn
 
   // Homing pins
-  int homeLeft  = -1;
-  int homeRight = -1;
+  int homeLow  = -1;
+  int homeHigh = -1;
 };
 
 struct MotorState {
@@ -172,6 +177,7 @@ struct MotorState {
     GotoCommand        m_gotoCmd;
     MoveCommand        m_moveCmd;
     VirtualHomeCommand m_virtualHomeCmd;
+    ParkingCommand     m_parkingCmd;
 
     // State machine
     bool                  m_cmdFlag    = false;
@@ -191,6 +197,12 @@ struct MotorState {
     uint64_t              m_lastEdge; // Timeout of the last edge
     uint32_t              m_currPulses = 0; // Current number of pulses
     
+    // Homing switch state
+    bool                  m_prevHomeLow;
+    bool                  m_prevHomeHigh;
+    bool                  m_homedLow  = false;
+    bool                  m_homedHigh = false;
+
     // Motor speed state
     MotorDirection  m_direction = Disabled;
     uint8_t         m_currSpeed = 255; // Current PWM speed
@@ -223,6 +235,10 @@ struct MotorState {
     inline uint32_t          brakeLen() const  { return m_properties.brakePulses; }
     inline uint32_t          accelLen() const  { return m_properties.accelPulses; }
     inline uint32_t          cycleLen() const  { return m_properties.cycleLen; }
+    inline bool              canHomeLow() const  { return m_properties.homeLow  > 0; }
+    inline bool              canHomeHigh() const { return m_properties.homeHigh > 0; }
+    inline bool              homedLow() const  { return m_homedLow; }
+    inline bool              homedHigh() const { return m_homedHigh; }
     inline const char *      name() const      { return m_properties.name; }
 
     // Sets the motor back to idle
@@ -250,6 +266,9 @@ struct MotorState {
 
     // Perform a virtual homing command
     void virtualHome(int16_t);
+
+    // Start a parking movement
+    void parking(MotorDirection, uint16_t pulses = 360);
 
     // Check if current is available
     bool haveCurrent() const;

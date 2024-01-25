@@ -55,6 +55,11 @@
 #define AZ_CURRENT         35
 #define EL_CURRENT         34
 
+#define AZ_HOME_MIN        26 // EL_MAX = 25
+#define AZ_HOME_MAX        14 // AZ_MIN = 26
+#define EL_HOME_MIN        27 // EL_MIN = 27
+#define EL_HOME_MAX        25 // AZ_MAX = 14
+
 #define AZ_PWM_FWD_CHANNEL 0
 #define AZ_PWM_BWD_CHANNEL 1
 #define EL_PWM_FWD_CHANNEL 2
@@ -192,6 +197,55 @@ cmdMINSPEED(std::vector<std::string> const &args)
 }
 
 bool
+cmdPARKING(std::vector<std::string> const &args)
+{
+  MotorState *state = nullptr;
+  MotorDirection direction = Disabled;
+  int16_t pulses;
+  float maxDeg;
+
+  if (sscanf(args[2].c_str(), "%f", &maxDeg) < 1 || fabs(maxDeg) > 360) {
+    LOG("E:Invalid search angle\r\n");
+    return false;
+  }
+
+  if (args[1] == "AZ") {
+    state = &g_context.azimuth;
+  } else if (args[1] == "EL") {
+    state = &g_context.elevation;
+  } else {
+    LOG("E:Invalid motor specification\r\n");
+    return false;
+  }
+
+  pulses = 2 * maxDeg;
+  
+  if (pulses > 0) {
+    direction = Forward;
+  } else if (pulses < 0) {
+    direction = Backward;
+    pulses    = -pulses;
+  }
+
+  state->parking(direction, (uint16_t) pulses);
+
+  return true;
+}
+
+bool
+cmdSWITCHES(std::vector<std::string> const &args)
+{
+  bool azMin = digitalRead(AZ_HOME_MIN) == HIGH;
+  bool azMax = digitalRead(AZ_HOME_MAX) == HIGH;
+  bool elMin = digitalRead(EL_HOME_MIN) == HIGH;
+  bool elMax = digitalRead(EL_HOME_MAX) == HIGH;
+
+  LOG("I:SWITCHES:%d,%d,%d,%d\r\n", azMin, azMax, elMin, elMax);
+
+  return true;
+}
+
+bool
 cmdABORT(std::vector<std::string> const &args)
 {
   g_context.azimuth.abort();
@@ -271,8 +325,10 @@ const CommandDesc g_commands[] =
   {"EL",          1, cmdEL},
   {"GOTO",        2, cmdGOTO},
   {"OVERCURRENT", 2, cmdOVERCURRENT},
+  {"PARKING",     2, cmdPARKING},
   {"ABORT",       0, cmdABORT},
   {"POS",         0, cmdPOS},
+  {"SWITCHES",    0, cmdSWITCHES},
   {"VH",          2, cmdVH},
   {"MINSPEED",    2, cmdMINSPEED},
   {"REPORT",      1, cmdREPORT},
@@ -310,6 +366,11 @@ setup() {
   pinMode(PSH_EL_DEC, INPUT_PULLUP);
   pinMode(PSH_EL_INC, INPUT_PULLUP);
 
+  pinMode(AZ_HOME_MIN, INPUT_PULLUP);
+  pinMode(AZ_HOME_MAX, INPUT_PULLUP);
+  pinMode(EL_HOME_MIN, INPUT_PULLUP);
+  pinMode(EL_HOME_MAX, INPUT_PULLUP);
+
   ledcSetup(AZ_PWM_FWD_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
   ledcSetup(AZ_PWM_BWD_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
   ledcAttachPin(AZ_MOTOR_FWD, AZ_PWM_FWD_CHANNEL);
@@ -325,25 +386,23 @@ setup() {
   properties.sensorPin   = SENSOR_AZ;
   properties.backwardPWM = AZ_PWM_BWD_CHANNEL;
   properties.forwardPWM  = AZ_PWM_FWD_CHANNEL;
-  properties.homeLeft    = 0;
-  properties.homeRight   = 1;
   properties.cycleLen    = 720;
   properties.slowFrac    = .55;
-
+  
   properties.overCurrentAlpha = 1e-4;
   properties.overCurrentPin   = AZ_CURRENT;
   properties.overCurrentSlope = 108.;
   properties.overCurrentZero  = 2524;
   properties.maxCurrent       = 3.;
 
+  properties.homeLow          = AZ_HOME_MIN;
+  properties.homeHigh         = AZ_HOME_MAX;
   g_context.azimuth.init(properties);
 
   properties.name        = "EL";
   properties.sensorPin   = SENSOR_EL;
   properties.backwardPWM = EL_PWM_BWD_CHANNEL;
   properties.forwardPWM  = EL_PWM_FWD_CHANNEL;
-  properties.homeLeft    = 0;
-  properties.homeRight   = 1;
   properties.cycleLen    = 720;
   properties.slowFrac    = 1;
 
@@ -353,6 +412,8 @@ setup() {
   properties.overCurrentZero  = 2529;
   properties.maxCurrent       = 5.;
   
+  properties.homeLow          = EL_HOME_MIN;
+  properties.homeHigh         = EL_HOME_MAX;
   g_context.elevation.init(properties);
 
   xTaskCreatePinnedToCore(
@@ -489,18 +550,22 @@ void
 printReports()
 {
   LOG(
-    "I:REPORT[AZ]:%g:%g:%d:%d\r\n",
+    "I:REPORT[AZ]:%g:%g:%d:%d:%d:%d\r\n",
     .5 * g_context.azimuth.currLocation,
     g_context.azimuth.current(),
     g_context.azimuth.state(),
-    g_context.azimuth.reason());
+    g_context.azimuth.reason(),
+    g_context.azimuth.homedLow(),
+    g_context.azimuth.homedHigh());
   
   LOG(
-    "I:REPORT[EL]:%g:%g:%d:%d\r\n",
+    "I:REPORT[EL]:%g:%g:%d:%d:%d:%d\r\n",
     .5 * g_context.elevation.currLocation,
     g_context.elevation.current(),
     g_context.elevation.state(),
-    g_context.elevation.reason());
+    g_context.elevation.reason(),
+    g_context.elevation.homedLow(),
+    g_context.elevation.homedHigh());
 }
 
 void
@@ -514,7 +579,7 @@ loop() {
   delay(50);
 
   readCommand();
-
+  
   if (g_reports)
     printReports();
   
