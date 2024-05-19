@@ -35,8 +35,9 @@
 #include <cstdint>
 
 #define MIN_COUNTS                1000
-#define MIN_FWD_PULSE_TIME_US   100000
-#define MIN_BWD_PULSE_TIME_US    30000
+#define DEFAULT_PULSE_TIME_US   100000
+#define STOP_DELAY_MS                5
+#define FIRST_PULSE_FRACTION         5
 #define MOTOR_TIMEOUT_US       2000000
 
 enum MotorDirection {
@@ -61,6 +62,12 @@ enum MotorStopReason {
   OverCurrent,
   NoCommand,
   StillRunning
+};
+
+enum MotorStateFlag {
+  DebugPulses,
+  WarnOnMissingPulses,
+  MirrorEdges,
 };
 
 struct MotorState;
@@ -108,12 +115,14 @@ class AbortCommand : public AbstractMotorCommand {
 };
 
 class MoveCommand : public AbstractMotorCommand {
-    int            m_button = -1;
+    int            m_button    = -1;
     MotorDirection m_direction = Disabled;
+    int            m_maxPulses = -1;
 
   public:
     void setDirection(MotorDirection);
     void setButton(int);
+    void setMaxPulses(int);
 
     virtual MotorDirection direction() override;
     virtual uint8_t speed() override;
@@ -161,6 +170,10 @@ struct MotorProperties {
   uint32_t brakePulses = 10;
   uint32_t cycleLen    = 720; // Pulses of 0.5º in a 360º turn
 
+  unsigned pulseFwdUs  = DEFAULT_PULSE_TIME_US;
+  unsigned pulseBwdUs  = DEFAULT_PULSE_TIME_US;
+  bool     overlookFirst = false;
+  
   // Homing pins
   int homeLow  = -1;
   int homeHigh = -1;
@@ -210,6 +223,9 @@ struct MotorState {
     MotorProperties m_properties;
     uint8_t         m_slowSpeed;
     
+    // Motor flags
+    uint32_t        m_flags = 0;
+
     void updateMotorSpeed();
     void checkStopCondition();
 
@@ -240,13 +256,38 @@ struct MotorState {
     inline bool              homedLow() const  { return m_homedLow; }
     inline bool              homedHigh() const { return m_homedHigh; }
     inline const char *      name() const      { return m_properties.name; }
+    
+    inline bool
+    testFlag(MotorStateFlag flag) const {
+      return (m_flags & (1 << flag)) != 0;
+    }
 
+    inline void
+    setFlag(MotorStateFlag flag) {
+      m_flags |= 1 << flag;
+    }
+
+    inline void
+    unsetFlag(MotorStateFlag flag) {
+      m_flags &= ~(1 << flag);
+    }
+
+    inline void
+    setFlags(uint32_t all) {
+      m_flags = all;
+    }
+
+    inline uint32_t
+    getFlags() const {
+      return m_flags;
+    }
+    
     // Sets the motor back to idle
     MotorStopReason   popStopReason();
 
     bool init(MotorProperties const &prop);
 
-    // Calculate current (reasonable) command timeout
+    // Calculate current (reasonable) command timeoutpu
     uint64_t currentTimeout();
 
     // Get normalized speed, according to the slowest speed
@@ -260,6 +301,9 @@ struct MotorState {
 
     // Run until button released
     void move(MotorDirection direction, int button);
+
+    // Run a given number of pulses
+    void advance(int16_t maxPulses);
 
     // Cancel a movement
     void abort();

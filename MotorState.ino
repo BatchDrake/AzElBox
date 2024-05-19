@@ -153,6 +153,12 @@ MoveCommand::setButton(int button)
   m_button = button;
 }
 
+void
+MoveCommand::setMaxPulses(int maxPulses)
+{
+  m_maxPulses = maxPulses;
+}
+
 uint8_t
 MoveCommand::speed()
 {
@@ -168,10 +174,13 @@ MoveCommand::direction()
 bool
 MoveCommand::stop()
 {
-  if (m_button < 0)
-    return true;
+  if (m_maxPulses >= 0)
+    return state()->pulses() >= m_maxPulses;
   
-  return digitalRead(m_button) == HIGH;
+  if (m_button >= 0)
+    return digitalRead(m_button) == HIGH;
+
+  return true;
 }
 
 /////////////////////////// Supported commands /////////////////////////////////
@@ -395,13 +404,16 @@ do_finish:
   if (reason == MotorStopReason::Success)
     m_cmd->fini();
 
+  m_state = Finalized;
   m_cmd   = nullptr;
 
+  if (reason != MotorStopReason::OverCurrent)
+    delay(STOP_DELAY_MS);
+  
   drive(Disabled);
+  
   m_currSpeed  = 0;
   m_currPulses = 0;
-
-  m_state = Finalized;
 
   LOG("I:FINALIZED[%s]:%s\r\n", name(), g_reasonStrings[reason]);
 }
@@ -409,8 +421,10 @@ do_finish:
 void
 MotorState::updateMotorSpeed()
 {
-  m_currSpeed = m_cmd->speed();
-  m_direction = m_cmd->direction();
+  if (m_cmd != nullptr) {
+    m_currSpeed = m_cmd->speed();
+    m_direction = m_cmd->direction();
+  }
 }
 
 void
@@ -509,24 +523,50 @@ MotorState::iteration()
 
       // Encoder pulses
       if (currPulse != m_prevState) {
-        bool edgeSignal = m_direction == Forward ? currPulse : !currPulse;
-        unsigned minLen = m_direction == Forward ? MIN_FWD_PULSE_TIME_US : MIN_BWD_PULSE_TIME_US;
+        bool edgeSignal = currPulse;
+        unsigned minLen = m_direction == Backward 
+          ? m_properties.pulseBwdUs
+          : m_properties.pulseFwdUs;
 
-        if (edgeSignal && ellapsed > minLen) {
-          ++m_currPulses;
-          if (m_direction == Forward)
-            ++currLocation;
-          else if (m_direction == Backward)
-            --currLocation;
+        if (testFlag(MirrorEdges) && m_direction == Backward)
+          edgeSignal = !currPulse;
+        
+        if (edgeSignal) {
+          bool overlook = m_properties.overlookFirst && m_currPulses == 0;
 
-          checkStopCondition();
+          if (ellapsed > minLen || overlook) {
+            ++m_currPulses;
+            if (m_direction == Forward)
+              ++currLocation;
+            else if (m_direction == Backward)
+              --currLocation;
 
-          if (m_state != Finalized) {
-            updateMotorSpeed();
-            drive(m_direction, true);
+            checkStopCondition();
+
+            if (m_state != Finalized) {
+              updateMotorSpeed();
+              drive(m_direction, true);
+            }
+          } else {
+            if (testFlag(WarnOnMissingPulses)) {
+              LOG(
+                "W:%s:Candidate missed:%llu <= %d\r\n",
+                name(),
+                ellapsed,
+                minLen);
+            }
           }
         }
 
+        if (testFlag(DebugPulses)) {
+          LOG(
+            "D:PULSE[%s]:%s:%d:%llu\r\n",
+            name(),
+            currPulse ? "RISING" : "FALLING",
+            edgeSignal,
+            ellapsed);
+        }
+        
         m_prevState = currPulse;
         m_lastEdge  = currEdge;
       } else if (m_abrtReq || ellapsed > currentTimeout()) {
@@ -605,6 +645,30 @@ MotorState::move(MotorDirection direction, int button)
 
   m_moveCmd.setButton(button);
   m_moveCmd.setDirection(direction);
+  m_moveCmd.setMaxPulses(-1);
+
+  m_pendingCmd = &m_moveCmd;
+  m_cmdFlag    = true;
+}
+
+void
+MotorState::advance(int16_t maxPulses)
+{
+  MotorDirection direction = MotorDirection::Forward;
+
+  if (m_state != Idle) {
+    LOG("E:%s:Motor is busy (speed: %d)\r\n", name(), currSpeed());
+    return;
+  }
+
+  if (maxPulses < 0) {
+    maxPulses = -maxPulses;
+    direction = MotorDirection::Backward;
+  }
+
+  m_moveCmd.setButton(-1);
+  m_moveCmd.setDirection(direction);
+  m_moveCmd.setMaxPulses(maxPulses);
 
   m_pendingCmd = &m_moveCmd;
   m_cmdFlag    = true;

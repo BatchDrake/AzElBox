@@ -143,6 +143,25 @@ cmdGOTO(std::vector<std::string> const &args)
 }
 
 bool
+cmdADVANCE(std::vector<std::string> const &args)
+{
+  float fDeltaAz, fDeltaEl;
+
+  if (sscanf(args[1].c_str(), "%f", &fDeltaAz) < 1 
+    || sscanf(args[2].c_str(), "%f", &fDeltaEl) < 1) {
+    LOG("E:Invalid angles\r\n");
+    return false;
+  }
+
+  LOG("I:ADVANCE:%g:%g\r\n", fDeltaAz, fDeltaEl);
+
+  g_context.azimuth.advance(2 * fDeltaAz);
+  g_context.elevation.advance(2 * fDeltaEl);
+
+  return true;
+}
+
+bool
 cmdOVERCURRENT(std::vector<std::string> const &args)
 {
   float current;
@@ -229,6 +248,42 @@ cmdPARKING(std::vector<std::string> const &args)
 
   state->parking(direction, (uint16_t) pulses);
 
+  return true;
+}
+
+//
+// FLAGS AZ SET/UNSET/TEST 0
+//
+bool
+cmdFLAGS(std::vector<std::string> const &args)
+{
+  MotorState *state = nullptr;
+  MotorDirection direction = Disabled;
+  unsigned flag;
+
+  if (args[1] == "AZ") {
+    state = &g_context.azimuth;
+  } else if (args[1] == "EL") {
+    state = &g_context.elevation;
+  } else {
+    LOG("E:Invalid motor specification\r\n");
+    return false;
+  }
+
+  if (sscanf(args[3].c_str(), "%u", &flag) < 1) {
+    LOG("E:Invalid flag\r\n");
+    return false;
+  }
+
+  if (args[2] == "SET")
+    state->setFlag(static_cast<MotorStateFlag>(flag));
+  else if (args[2] == "UNSET")
+    state->unsetFlag(static_cast<MotorStateFlag>(flag));
+  else if (args[2] == "TEST")
+    LOG("I:FLAG[%s]:%d:%d\r\n", args[1].c_str(), flag, state->testFlag(static_cast<MotorStateFlag>(flag)));
+
+  LOG("I:FLAGS[%s]:0x%x\r\n", args[1].c_str(), state->getFlags());
+  
   return true;
 }
 
@@ -324,6 +379,7 @@ const CommandDesc g_commands[] =
   {"AZ",          1, cmdAZ},
   {"EL",          1, cmdEL},
   {"GOTO",        2, cmdGOTO},
+  {"ADVANCE",     2, cmdADVANCE},
   {"OVERCURRENT", 2, cmdOVERCURRENT},
   {"PARKING",     2, cmdPARKING},
   {"ABORT",       0, cmdABORT},
@@ -332,6 +388,7 @@ const CommandDesc g_commands[] =
   {"VH",          2, cmdVH},
   {"MINSPEED",    2, cmdMINSPEED},
   {"REPORT",      1, cmdREPORT},
+  {"FLAGS",       3, cmdFLAGS},
   {nullptr,       0, nullptr}
 };
 
@@ -388,7 +445,8 @@ setup() {
   properties.forwardPWM  = AZ_PWM_FWD_CHANNEL;
   properties.cycleLen    = 720;
   properties.slowFrac    = .55;
-  
+  properties.overlookFirst = true;
+
   properties.overCurrentAlpha = 1e-4;
   properties.overCurrentPin   = AZ_CURRENT;
   properties.overCurrentSlope = 108.;
@@ -405,7 +463,9 @@ setup() {
   properties.forwardPWM  = EL_PWM_FWD_CHANNEL;
   properties.cycleLen    = 720;
   properties.slowFrac    = 1;
-
+  properties.pulseFwdUs  = (2 * DEFAULT_PULSE_TIME_US) / 3;
+  properties.overlookFirst = true;
+  
   properties.overCurrentAlpha = 1e-4;
   properties.overCurrentPin   = EL_CURRENT;
   properties.overCurrentSlope = 108.;
